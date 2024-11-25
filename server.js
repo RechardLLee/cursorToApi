@@ -2,10 +2,52 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import fetch from 'node-fetch';
 import { v4 as uuidv4 } from 'uuid';
-
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const app = express();
 app.use(bodyParser.json());
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 添加静态文件服务
+app.use(express.static('public'));
+
+// 存储API密钥的文件路径
+const KEYS_FILE = path.join(__dirname, 'keys.json');
+
+// 确保keys.json文件存在
+if (!fs.existsSync(KEYS_FILE)) {
+    fs.writeFileSync(KEYS_FILE, JSON.stringify([]));
+}
+
+// 全局变量
+let currentKeyIndex = 0;
+
+// 读取API密钥
+function readKeys() {
+    try {
+        const data = fs.readFileSync(KEYS_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error('读取密钥文件失败:', error);
+        return [];
+    }
+}
+
+// 保存API密钥
+function saveKeys(keys) {
+    try {
+        fs.writeFileSync(KEYS_FILE, JSON.stringify(keys));
+    } catch (error) {
+        console.error('保存密钥文件失败:', error);
+    }
+}
+
+// 请求计数器
+let totalRequests = 0;
 
 // Helper function to convert string to hex bytes
 function stringToHex(str,model_name) {
@@ -68,94 +110,55 @@ function stringToHex(str,model_name) {
     ).toUpperCase();
     return Buffer.from(hexString, 'hex');
 }
-// 添加一个测试路由
-app.get('/test', (req, res) => {
-    console.log('Test endpoint hit!');
-    res.json({ message: 'Test successful' });
+
+// API路由
+app.get('/api/keys', (req, res) => {
+    res.json(readKeys());
 });
-// OpenAI-style chat completions endpoint
-// ... existing code ...
-// ... existing code ...
 
-// Add model list endpoint before the chat completions endpoint
-app.get('/v1/models', (req, res) => {
-    const models = [
-        {
-            id: "claude-3.5-sonnet",
-            object: "model",
-            created: 1706745938,
-            owned_by: "cursor"
-        },
-        {
-            id: "gpt-4o",
-            object: "model",
-            created: 1706745938,
-            owned_by: "cursor"
-        },
-        {
-            id: "claude-3-5-sonnet-20241022",
-            object: "model",
-            created: 1706745938,
-            owned_by: "cursor"
-        },
-        {
-            id: "gpt-4o-mini",
-            object: "model",
-            created: 1706745938,
-            owned_by: "cursor"
-        },
-        {
-            id: "o1-mini",
-            object: "model",
-            created: 1706745938,
-            owned_by: "cursor"
-        },
-        {
-            id: "o1-preview",
-            object: "model",
-            created: 1706745938,
-            owned_by: "cursor"
-        },
-        {
-            id: "cursor-small",
-            object: "model",
-            created: 1706745938,
-            owned_by: "cursor"
-        }
-    ];
+app.post('/api/keys', (req, res) => {
+    const { key } = req.body;
+    const keys = readKeys();
+    if (!keys.includes(key)) {
+        keys.push(key);
+        saveKeys(keys);
+    }
+    res.json({ success: true });
+});
 
+app.delete('/api/keys', (req, res) => {
+    const { key } = req.body;
+    const keys = readKeys();
+    const newKeys = keys.filter(k => k !== key);
+    saveKeys(newKeys);
+    res.json({ success: true });
+});
+
+app.get('/api/status', (req, res) => {
+    const keys = readKeys();
     res.json({
-        object: "list",
-        data: models
+        status: 'running',
+        currentKey: keys[currentKeyIndex] || '-',
+        totalRequests
     });
 });
-// 添加一个全局变量来追踪当前使用的密钥索引
-let currentKeyIndex = 0;
-// ... existing code ...
+
+// 修改现有的chat completions路由，添加请求计数
 app.post('/v1/chat/completions', async (req, res) => {
+    totalRequests++;
     try {
-        const { model,messages, stream = false } = req.body;
-        let authToken = req.headers.authorization?.replace('Bearer ', '');
-        // 处理逗号分隔的密钥
-        const keys = authToken.split(',').map(key => key.trim());
-        if (keys.length > 0) {
-            // 确保 currentKeyIndex 不会越界
-            if (currentKeyIndex >= keys.length) {
-                currentKeyIndex = 0;
-            }
-            // 使用当前索引获取密钥
-            authToken = keys[currentKeyIndex];
-            // 更新索引
-            currentKeyIndex = (currentKeyIndex + 1);
+        const { model, messages, stream = false } = req.body;
+        const keys = readKeys();
+        if (keys.length === 0) {
+            return res.status(400).json({ error: '未配置API密钥' });
         }
-        if (authToken && authToken.includes('%3A%3A')) {
-            authToken = authToken.split('%3A%3A')[1];
+
+        // 确保 currentKeyIndex 不会越界
+        if (currentKeyIndex >= keys.length) {
+            currentKeyIndex = 0;
         }
-        if (!messages || !Array.isArray(messages) || messages.length === 0 || !authToken) {
-            return res.status(400).json({ 
-                error: 'Invalid request. Messages should be a non-empty array and authorization is required' 
-            });
-        }
+        const authToken = keys[currentKeyIndex];
+        currentKeyIndex = (currentKeyIndex + 1) % keys.length;
 
         if (stream) {
             res.setHeader('Content-Type', 'text/event-stream');
@@ -310,14 +313,14 @@ app.post('/v1/chat/completions', async (req, res) => {
     } catch (error) {
         console.error('Error:', error);
         if (!res.headersSent) {
-            if (req.body.stream) {
-                res.write(`data: ${JSON.stringify({ error: 'Internal server error' })}\n\n`);
-                return res.end();
-            } else {
-                return res.status(500).json({ error: 'Internal server error' });
-            }
+            return res.status(500).json({ error: 'Internal server error' });
         }
     }
+});
+
+// 主页路由
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 const PORT = process.env.PORT || 3000;

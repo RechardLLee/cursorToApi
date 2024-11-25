@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cursor API 管理界面</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .key-item {
+            background-color: #f8f9fa;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h2>Cursor API 管理界面</h2>
+        
+        <!-- API密钥管理 -->
+        <div class="card mt-4">
+            <div class="card-header">
+                API密钥管理
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <input type="text" class="form-control" id="newKey" placeholder="输入新的API密钥">
+                </div>
+                <button class="btn btn-primary" onclick="addKey()">添加密钥</button>
+                <div id="keysList" class="mt-3">
+                    <!-- API密钥将在这里显示 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 服务状态 -->
+        <div class="card mt-4">
+            <div class="card-header">
+                服务状态
+            </div>
+            <div class="card-body">
+                <p>状态: <span id="serverStatus">检查中...</span></p>
+                <p>当前使用的密钥: <span id="currentKey">-</span></p>
+                <p>总请求次数: <span id="totalRequests">0</span></p>
+            </div>
+        </div>
+
+        <!-- 测试区域 -->
+        <div class="card mt-4">
+            <div class="card-header">
+                API测试
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <textarea class="form-control" id="testInput" rows="3" placeholder="输入测试消息"></textarea>
+                </div>
+                <button class="btn btn-success" onclick="testAPI()">发送测试</button>
+                <div class="mt-3">
+                    <pre id="testResult" class="bg-light p-3" style="display: none;"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 获取和显示API密钥列表
+        async function loadKeys() {
+            try {
+                const response = await fetch('/api/keys');
+                const keys = await response.json();
+                const keysList = document.getElementById('keysList');
+                keysList.innerHTML = keys.map(key => `
+                    <div class="key-item d-flex justify-content-between align-items-center">
+                        <span>${key.substring(0, 10)}...</span>
+                        <button class="btn btn-danger btn-sm" onclick="deleteKey('${key}')">删除</button>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('加载密钥失败:', error);
+            }
+        }
+
+        // 添加新的API密钥
+        async function addKey() {
+            const keyInput = document.getElementById('newKey');
+            const key = keyInput.value.trim();
+            if (!key) return;
+
+            try {
+                await fetch('/api/keys', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({key})
+                });
+                keyInput.value = '';
+                loadKeys();
+            } catch (error) {
+                console.error('添加密钥失败:', error);
+            }
+        }
+
+        // 删除API密钥
+        async function deleteKey(key) {
+            try {
+                await fetch('/api/keys', {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({key})
+                });
+                loadKeys();
+            } catch (error) {
+                console.error('删除密钥失败:', error);
+            }
+        }
+
+        // 测试API
+        async function testAPI() {
+            const input = document.getElementById('testInput').value;
+            const resultDiv = document.getElementById('testResult');
+            
+            try {
+                const response = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        model: "claude-3-sonnet-20241022",
+                        messages: [{role: "user", content: input}]
+                    })
+                });
+                const result = await response.json();
+                resultDiv.style.display = 'block';
+                resultDiv.textContent = JSON.stringify(result, null, 2);
+            } catch (error) {
+                resultDiv.style.display = 'block';
+                resultDiv.textContent = '测试失败: ' + error.message;
+            }
+        }
+
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            loadKeys();
+            // 定期更新服务状态
+            setInterval(() => {
+                fetch('/api/status')
+                    .then(res => res.json())
+                    .then(status => {
+                        document.getElementById('serverStatus').textContent = status.status;
+                        document.getElementById('currentKey').textContent = status.currentKey;
+                        document.getElementById('totalRequests').textContent = status.totalRequests;
+                    });
+            }, 5000);
+        });
+    </script>
+</body>
+</html> 

@@ -1,28 +1,30 @@
 @echo off
-echo Starting Cursor API Server...
+chcp 65001
+echo Cursor API 管理界面启动程序
 
-:: Check if node_modules exists
-if not exist "node_modules\" (
-    echo Installing dependencies...
-    call npm install express body-parser node-fetch uuid
+:: 创建必要的目录
+if not exist "public" mkdir public
+
+:: 复制前端文件
+if not exist "public\index.html" (
+    echo 正在创建前端文件...
+    copy /Y index.html public\index.html
 )
 
-:: Check if package.json exists
-if not exist "package.json" (
-    echo Creating package.json...
-    echo {> package.json
-    echo   "type": "module",>> package.json
-    echo   "dependencies": {>> package.json
-    echo     "express": "^4.18.2",>> package.json
-    echo     "body-parser": "^1.20.2",>> package.json
-    echo     "node-fetch": "^3.3.2",>> package.json
-    echo     "uuid": "^9.0.1">> package.json
-    echo   }>> package.json
-    echo }>> package.json
+:: 检查 Node.js
+where node >nul 2>nul
+if %errorlevel% neq 0 (
+    echo 未安装 Node.js，请访问 https://nodejs.org/ 下载安装
+    pause
+    exit /b
 )
 
-:: Start the server
-echo Starting server...
+:: 安装依赖
+echo 正在安装依赖...
+call npm install
+
+:: 启动服务器
+echo 正在启动服务器...
 node server.js
 
 pause
