@@ -46,7 +46,7 @@
             </div>
         </div>
 
-        <!-- 测试区域 -->
+        <!-- 修改测试区域 -->
         <div class="card mt-4">
             <div class="card-header">
                 API测试
@@ -57,7 +57,7 @@
                 </div>
                 <button class="btn btn-success" onclick="testAPI()">发送测试</button>
                 <div class="mt-3">
-                    <pre id="testResult" class="bg-light p-3" style="display: none;"></pre>
+                    <div id="testResult" class="bg-light p-3" style="display: none; white-space: pre-wrap;"></div>
                 </div>
             </div>
         </div>
@@ -114,7 +114,7 @@
             }
         }
 
-        // 测试API
+        // 修改测试API函数
         async function testAPI() {
             const input = document.getElementById('testInput').value;
             const resultDiv = document.getElementById('testResult');
@@ -130,7 +130,8 @@
                 });
                 const result = await response.json();
                 resultDiv.style.display = 'block';
-                resultDiv.textContent = JSON.stringify(result, null, 2);
+                // 只显示AI的回复内容
+                resultDiv.textContent = result.choices[0].message.content || '未获得回复';
             } catch (error) {
                 resultDiv.style.display = 'block';
                 resultDiv.textContent = '测试失败: ' + error.message;

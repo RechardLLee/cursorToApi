@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
 
 const app = express();
 app.use(bodyParser.json());
@@ -111,16 +112,37 @@ function stringToHex(str,model_name) {
     return Buffer.from(hexString, 'hex');
 }
 
+// 修改 API 密钥格式检查函数
+function isValidKey(key) {
+    // 检查是否是有效的 WorkosCursorSessionToken 格式
+    return key && typeof key === 'string' && 
+           (key.startsWith('user_') || key.includes('eyJ'));
+}
+
 // API路由
 app.get('/api/keys', (req, res) => {
     res.json(readKeys());
 });
 
+// 修改添加密钥的路由
 app.post('/api/keys', (req, res) => {
     const { key } = req.body;
+    
+    // 处理从cookie直接复制的情况
+    let processedKey = key.trim();
+    if (processedKey.includes('WorkosCursorSessionToken=')) {
+        processedKey = decodeURIComponent(processedKey.split('WorkosCursorSessionToken=')[1].split(';')[0]);
+    }
+    
+    if (!isValidKey(processedKey)) {
+        return res.status(400).json({ 
+            error: '无效的API密钥格式。请确保复制了正确的 WorkosCursorSessionToken 值。' 
+        });
+    }
+
     const keys = readKeys();
-    if (!keys.includes(key)) {
-        keys.push(key);
+    if (!keys.includes(processedKey)) {
+        keys.push(processedKey);
         saveKeys(keys);
     }
     res.json({ success: true });
@@ -143,7 +165,7 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-// 修改现有的chat completions路由，添加请求计数
+// 修改chat completions路由中的认证头部
 app.post('/v1/chat/completions', async (req, res) => {
     totalRequests++;
     try {
@@ -157,14 +179,14 @@ app.post('/v1/chat/completions', async (req, res) => {
         if (currentKeyIndex >= keys.length) {
             currentKeyIndex = 0;
         }
-        const authToken = keys[currentKeyIndex];
-        currentKeyIndex = (currentKeyIndex + 1) % keys.length;
-
-        if (stream) {
-            res.setHeader('Content-Type', 'text/event-stream');
-            res.setHeader('Cache-Control', 'no-cache');
-            res.setHeader('Connection', 'keep-alive');
+        let authToken = keys[currentKeyIndex].trim();
+        
+        // 如果密钥包含完整的cookie字符串，提取实际的token
+        if (authToken.includes('WorkosCursorSessionToken=')) {
+            authToken = decodeURIComponent(authToken.split('WorkosCursorSessionToken=')[1].split(';')[0]);
         }
+        
+        currentKeyIndex = (currentKeyIndex + 1) % keys.length;
 
         const formattedMessages = messages.map(msg => `${msg.role}:${msg.content}`).join('\n');
         const hexData = stringToHex(formattedMessages, model);
@@ -173,6 +195,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/connect+proto',
+                'Cookie': `WorkosCursorSessionToken=${authToken}`,
                 'authorization': `Bearer ${authToken}`,
                 'connect-accept-encoding': 'gzip,br',
                 'connect-protocol-version': '1',
@@ -187,6 +210,22 @@ app.post('/v1/chat/completions', async (req, res) => {
             },
             body: hexData
         });
+
+        // 检查响应状态
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('API Error:', errorText);
+            return res.status(response.status).json({ 
+                error: '调用API失败，请检查密钥是否正确并重试。' 
+            });
+        }
+
+        if (stream) {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+        }
+
         function extractTextFromChunk(chunk) {
             let i = 0;
             let results = [];
@@ -221,6 +260,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             
             return results.join(''); // Join all extracted text pieces
         }
+
         if (stream) {
             const responseId = `chatcmpl-${uuidv4()}`;
             
@@ -265,27 +305,12 @@ app.post('/v1/chat/completions', async (req, res) => {
             res.write('data: [DONE]\n\n');
             return res.end();
         } else {
-            const responseId = `chatcmpl-${uuidv4()}`;
-            
-            
-
-            // 使用类似 Python 的方式处理流
-            let text =""
+            let fullText = "";
             for await (const chunk of response.body) {
-                // 检查 chunk 是否以 0x00000000 开头
-                if (chunk && Buffer.isBuffer(chunk) && 
-                    chunk.length >= 4 && 
-                    chunk[0] === 0x00 && 
-                    chunk[1] === 0x00 && 
-                    chunk[2] === 0x00 && 
-                    chunk[3] === 0x00) {
-                    try {
-                        // 跳过前7个字节的头部数据
-                        text = text+extractTextFromChunk(chunk);
-                        
-                    } catch (error) {
-                        console.error('Chunk processing error:', error);
-                        continue;
+                if (chunk && Buffer.isBuffer(chunk)) {
+                    const text = extractTextFromChunk(chunk);
+                    if (text) {
+                        fullText += text;
                     }
                 }
             }
@@ -294,12 +319,12 @@ app.post('/v1/chat/completions', async (req, res) => {
                 id: `chatcmpl-${uuidv4()}`,
                 object: 'chat.completion',
                 created: Math.floor(Date.now() / 1000),
-                model: 'claude-3-sonnet-20241022',
+                model: model,
                 choices: [{
                     index: 0,
                     message: {
                         role: 'assistant',
-                        content: text
+                        content: fullText
                     },
                     finish_reason: 'stop'
                 }],
@@ -313,7 +338,9 @@ app.post('/v1/chat/completions', async (req, res) => {
     } catch (error) {
         console.error('Error:', error);
         if (!res.headersSent) {
-            return res.status(500).json({ error: 'Internal server error' });
+            return res.status(500).json({ 
+                error: '服务器错误，请稍后重试。如果问题持续存在，请检查API密钥是否有效。' 
+            });
         }
     }
 });
@@ -326,4 +353,20 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    // 自动打开浏览器
+    const url = `http://localhost:${PORT}`;
+    let command;
+    switch (process.platform) {
+        case 'darwin':  // macOS
+            command = `open ${url}`;
+            break;
+        case 'win32':   // Windows
+            command = `start ${url}`;
+            break;
+        default:        // Linux
+            command = `xdg-open ${url}`;
+    }
+    exec(command, (err) => {
+        if (err) console.error('无法自动打开浏览器:', err);
+    });
 });
